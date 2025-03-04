@@ -68,7 +68,7 @@ class ThreadingTCPServer(socketserver.ThreadingTCPServer):
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def handle(self):
-        logger.info(f"Received raw connection from {self.client_address} for request: {self.requestline}")
+        logger.info(f"Received raw connection from {self.client_address}")
         super().handle()
 
     def authenticate(self):
