@@ -8,9 +8,8 @@ import select
 import base64
 import os
 import logging
-import ssl
+from queue import Queue
 
-# 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -69,12 +68,16 @@ class ThreadingTCPServer(socketserver.ThreadingTCPServer):
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def authenticate(self):
+        if self.client_address[0] == '127.0.0.1':
+            logger.info(f"Ignoring health check from {self.client_address}")
+            self.send_response(200)
+            self.end_headers()
+            return False
         auth_header = self.headers.get('Proxy-Authorization')
         if not auth_header or not auth_header.startswith('Basic '):
             logger.warning(f"Authentication header missing or invalid from {self.client_address}")
             self.send_auth_required()
             return False
-        
         encoded_credentials = auth_header.split(' ')[1]
         try:
             decoded_credentials = base64.b64decode(encoded_credentials).decode('utf-8')
@@ -83,7 +86,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             logger.error(f"Failed to decode credentials: {str(e)}")
             self.send_auth_required()
             return False
-        
         if username != USERNAME or password != PASSWORD:
             logger.warning(f"Invalid username or password from {self.client_address}")
             self.send_auth_required()
@@ -100,17 +102,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_CONNECT(self):
         if not self.authenticate():
             return
-
         proxy = PROXY_LIST[counter.get_value()]
         counter.increment()
         username, rest = proxy.split(':', 1)
         password, proxy_addr = rest.split('@', 1)
         proxy_host, proxy_port = proxy_addr.split(':')
         proxy_port = int(proxy_port)
-
         dest_host, dest_port = self.path.split(':')
         dest_port = int(dest_port)
-
         logger.info(f"Handling CONNECT request to {self.path} via proxy {proxy_addr}")
         try:
             proxy_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -121,17 +120,14 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             auth_header = b"Proxy-Authorization: Basic " + base64.b64encode(auth) + b"\r\n"
             connect_req = f"CONNECT {self.path} HTTP/1.1\r\nHost: {self.path}\r\n{auth_header.decode()}\r\n".encode()
             proxy_sock.sendall(connect_req)
-
             response = proxy_sock.recv(4096)
             if b"200" not in response:
                 logger.error(f"Proxy connection failed: {response.decode('utf-8', errors='ignore')}")
                 self.send_error(502, "Proxy connection failed")
                 proxy_sock.close()
                 return
-
             self.send_response(200, "Connection established")
             self.end_headers()
-
             client_sock = self.connection
             self.forward_data(client_sock, proxy_sock, timeout=300)
             proxy_sock.close()
@@ -163,17 +159,15 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_method(self, method):
         if not self.authenticate():
             return
-
+        logger.info(f"Processing {method} request from {self.client_address}")
         proxy = PROXY_LIST[counter.get_value()]
         counter.increment()
         username, rest = proxy.split(':', 1)
         password, proxy_addr = rest.split('@', 1)
         proxy_url = f"http://{proxy_addr}"
         auth = HTTPProxyAuth(username, password)
-
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length) if content_length > 0 else None
-
         logger.info(f"Handling {method} request to {self.path} via proxy {proxy_addr}")
         try:
             response = requests.request(
@@ -191,7 +185,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 if key.lower() != 'transfer-encoding':
                     self.send_header(key, value)
             self.end_headers()
-
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     self.wfile.write(chunk)
@@ -204,9 +197,11 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(500, f"Request failed: {str(e)}")
 
     def do_GET(self):
+        logger.info(f"Received GET request from {self.client_address} for {self.path}")
         self.do_method('GET')
 
     def do_POST(self):
+        logger.info(f"Received POST request from {self.client_address} for {self.path}")
         self.do_method('POST')
 
     def do_PUT(self):
@@ -229,20 +224,12 @@ if __name__ == "__main__":
     logger.info(f"Starting proxy server on port {PORT}")
     logger.info(f"Proxy username: {USERNAME}")
     logger.info(f"Proxy password: {PASSWORD}")
-    
     test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     test_sock.settimeout(10)
     result = test_sock.connect_ex(('proxy.proxy302.com', 2222))
     logger.info(f"External proxy connectivity test: {result}")
     test_sock.close()
-
     server = ThreadingTCPServer(("0.0.0.0", PORT), ProxyHandler)
-    # 本地测试时启用 SSL（Render.com 不需要此部分）
-    if os.getenv("RENDER") is None:  # 如果不在 Render 环境中
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        context.load_cert_chain(certfile="server.crt", keyfile="server.key")  # 需要生成证书和密钥
-        server.socket = context.wrap_socket(server.socket, server_side=True)
-    
     try:
         server.serve_forever()
     except KeyboardInterrupt:
