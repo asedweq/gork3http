@@ -67,6 +67,10 @@ class ThreadingTCPServer(socketserver.ThreadingTCPServer):
             self.active_connections -= 1
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
+    def handle(self):
+        logger.info(f"Received raw connection from {self.client_address}")
+        super().handle()
+
     def authenticate(self):
         if self.client_address[0] == '127.0.0.1':
             logger.info(f"Ignoring health check from {self.client_address}")
