@@ -8,13 +8,12 @@ import select
 import base64
 import os
 import logging
-from queue import Queue
+import ssl
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 代理列表
 PROXY_LIST = [
     "gZJpExeS:rrD520glAQpqNlko@proxy.proxy302.com:2222",
     "XcjTsSKz:wpRzDh0Vd5dNUYK5@proxy.proxy302.com:2222",
@@ -69,10 +68,6 @@ class ThreadingTCPServer(socketserver.ThreadingTCPServer):
             self.active_connections -= 1
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
-    def handle(self):
-        logger.info(f"Received request from {self.client_address}: {self.requestline}")
-        super().handle()
-
     def authenticate(self):
         auth_header = self.headers.get('Proxy-Authorization')
         if not auth_header or not auth_header.startswith('Basic '):
@@ -242,6 +237,12 @@ if __name__ == "__main__":
     test_sock.close()
 
     server = ThreadingTCPServer(("0.0.0.0", PORT), ProxyHandler)
+    # 本地测试时启用 SSL（Render.com 不需要此部分）
+    if os.getenv("RENDER") is None:  # 如果不在 Render 环境中
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile="server.crt", keyfile="server.key")  # 需要生成证书和密钥
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+    
     try:
         server.serve_forever()
     except KeyboardInterrupt:
