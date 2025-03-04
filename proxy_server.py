@@ -28,7 +28,6 @@ PROXY_LIST = [
     "N1NEekds:eGRnjoinXgtpVv5G@proxy.proxy302.com:2222"
 ]
 
-# 线程安全的计数器类
 class ThreadSafeCounter:
     def __init__(self):
         self.lock = threading.Lock()
@@ -46,11 +45,10 @@ counter = ThreadSafeCounter()
 USERNAME = "QDd8hvwOihuT"
 PASSWORD = "IoxUZXJIe7lrEYkb"
 
-# 自定义线程池服务器
 class ThreadingTCPServer(socketserver.ThreadingTCPServer):
-    daemon_threads = True  # 守护线程，主线程退出时自动清理
-    allow_reuse_address = True  # 允许端口重用
-    max_connections = 100  # 最大并发连接数
+    daemon_threads = True
+    allow_reuse_address = True
+    max_connections = 100
 
     def __init__(self, server_address, RequestHandlerClass):
         super().__init__(server_address, RequestHandlerClass)
@@ -71,6 +69,10 @@ class ThreadingTCPServer(socketserver.ThreadingTCPServer):
             self.active_connections -= 1
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
+    def handle(self):
+        logger.info(f"Received request from {self.client_address}: {self.requestline}")
+        super().handle()
+
     def authenticate(self):
         auth_header = self.headers.get('Proxy-Authorization')
         if not auth_header or not auth_header.startswith('Basic '):
@@ -186,7 +188,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 data=body,
                 proxies={"http": proxy_url, "https": proxy_url},
                 auth=auth,
-                timeout=(10, 30),  # 连接超时10秒，读取超时30秒
+                timeout=(10, 30),
                 stream=True
             )
             self.send_response(response.status_code)
@@ -233,11 +235,10 @@ if __name__ == "__main__":
     logger.info(f"Proxy username: {USERNAME}")
     logger.info(f"Proxy password: {PASSWORD}")
     
-    # 测试外部代理连通性
     test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     test_sock.settimeout(10)
     result = test_sock.connect_ex(('proxy.proxy302.com', 2222))
-    logger.info(f"External proxy connectivity test: {result}")  # 0 表示成功，非0表示失败
+    logger.info(f"External proxy connectivity test: {result}")
     test_sock.close()
 
     server = ThreadingTCPServer(("0.0.0.0", PORT), ProxyHandler)
