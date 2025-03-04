@@ -68,7 +68,7 @@ class ThreadingTCPServer(socketserver.ThreadingTCPServer):
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def handle(self):
-        logger.info(f"Received raw connection from {self.client_address}")
+        logger.info(f"Received raw connection from {self.client_address} for request: {self.requestline}")
         super().handle()
 
     def authenticate(self):
@@ -106,6 +106,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def do_CONNECT(self):
         if not self.authenticate():
             return
+        logger.info(f"CONNECT request received: {self.path} from {self.client_address}")
         proxy = PROXY_LIST[counter.get_value()]
         counter.increment()
         username, rest = proxy.split(':', 1)
@@ -125,9 +126,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             connect_req = f"CONNECT {self.path} HTTP/1.1\r\nHost: {self.path}\r\n{auth_header.decode()}\r\n".encode()
             proxy_sock.sendall(connect_req)
             response = proxy_sock.recv(4096)
+            logger.info(f"External proxy response: {response.decode('utf-8', errors='ignore')}")
             if b"200" not in response:
                 logger.error(f"Proxy connection failed: {response.decode('utf-8', errors='ignore')}")
-                self.send_error(502, "Proxy connection failed")
+                self.send_error(502, f"Proxy connection failed: {response.decode('utf-8', errors='ignore')}")
                 proxy_sock.close()
                 return
             self.send_response(200, "Connection established")
