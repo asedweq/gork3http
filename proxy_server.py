@@ -9,7 +9,6 @@ import base64
 import os
 import logging
 from queue import Queue
-import time
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -49,10 +48,9 @@ PASSWORD = "IoxUZXJIe7lrEYkb"
 
 # 自定义线程池服务器
 class ThreadingTCPServer(socketserver.ThreadingTCPServer):
-    daemon_threads = True  # 线程为守护线程，主线程退出时自动清理
+    daemon_threads = True  # 守护线程，主线程退出时自动清理
     allow_reuse_address = True  # 允许端口重用
     max_connections = 100  # 最大并发连接数
-    connection_queue = Queue(maxsize=max_connections)
 
     def __init__(self, server_address, RequestHandlerClass):
         super().__init__(server_address, RequestHandlerClass)
@@ -76,7 +74,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
     def authenticate(self):
         auth_header = self.headers.get('Proxy-Authorization')
         if not auth_header or not auth_header.startswith('Basic '):
-            logger.warning("Authentication header missing or invalid")
+            logger.warning(f"Authentication header missing or invalid from {self.client_address}")
             self.send_auth_required()
             return False
         
@@ -90,9 +88,10 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             return False
         
         if username != USERNAME or password != PASSWORD:
-            logger.warning("Invalid username or password")
+            logger.warning(f"Invalid username or password from {self.client_address}")
             self.send_auth_required()
             return False
+        logger.info(f"Authentication successful for {self.client_address}")
         return True
 
     def send_auth_required(self):
@@ -118,8 +117,8 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
         logger.info(f"Handling CONNECT request to {self.path} via proxy {proxy_addr}")
         try:
             proxy_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            proxy_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # 启用 TCP Keep-Alive
-            proxy_sock.settimeout(30)  # 初始连接超时
+            proxy_sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            proxy_sock.settimeout(30)
             proxy_sock.connect((proxy_host, proxy_port))
             auth = f"{username}:{password}".encode()
             auth_header = b"Proxy-Authorization: Basic " + base64.b64encode(auth) + b"\r\n"
@@ -137,7 +136,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
             client_sock = self.connection
-            self.forward_data(client_sock, proxy_sock, timeout=300)  # 5分钟超时
+            self.forward_data(client_sock, proxy_sock, timeout=300)
             proxy_sock.close()
         except Exception as e:
             logger.error(f"CONNECT failed: {str(e)}")
@@ -146,16 +145,15 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 proxy_sock.close()
 
     def forward_data(self, client_sock, proxy_sock, timeout):
-        """优化长连接转发，使用 select 实现高效 I/O"""
         start_time = time.time()
         sockets = [client_sock, proxy_sock]
         while time.time() - start_time < timeout:
-            readable, _, _ = select.select(sockets, [], [], 1.0)  # 1秒超时检查
+            readable, _, _ = select.select(sockets, [], [], 1.0)
             for sock in readable:
                 try:
                     data = sock.recv(8192)
                     if not data:
-                        return  # 连接关闭
+                        return
                     if sock is client_sock:
                         proxy_sock.sendall(data)
                     else:
@@ -181,7 +179,6 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
         logger.info(f"Handling {method} request to {self.path} via proxy {proxy_addr}")
         try:
-            # 为 OpenAI API 优化，保持流式响应
             response = requests.request(
                 method=method,
                 url=self.path,
@@ -189,7 +186,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                 data=body,
                 proxies={"http": proxy_url, "https": proxy_url},
                 auth=auth,
-                timeout=30,  # 初始超时
+                timeout=(10, 30),  # 连接超时10秒，读取超时30秒
                 stream=True
             )
             self.send_response(response.status_code)
@@ -198,13 +195,15 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
                     self.send_header(key, value)
             self.end_headers()
 
-            # 处理流式响应，适合 OpenAI API
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     self.wfile.write(chunk)
-                    self.wfile.flush()  # 确保实时发送
-        except Exception as e:
+                    self.wfile.flush()
+        except requests.exceptions.RequestException as e:
             logger.error(f"Request failed: {str(e)}")
+            self.send_error(502, f"Proxy backend failed: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error: {str(e)}")
             self.send_error(500, f"Request failed: {str(e)}")
 
     def do_GET(self):
@@ -234,6 +233,13 @@ if __name__ == "__main__":
     logger.info(f"Proxy username: {USERNAME}")
     logger.info(f"Proxy password: {PASSWORD}")
     
+    # 测试外部代理连通性
+    test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    test_sock.settimeout(10)
+    result = test_sock.connect_ex(('proxy.proxy302.com', 2222))
+    logger.info(f"External proxy connectivity test: {result}")  # 0 表示成功，非0表示失败
+    test_sock.close()
+
     server = ThreadingTCPServer(("0.0.0.0", PORT), ProxyHandler)
     try:
         server.serve_forever()
